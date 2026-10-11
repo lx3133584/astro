@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AstroIntegrationLogger } from 'astro';
-import { rolldown } from 'rolldown';
 import {
 	ASTRO_LOCALS_HEADER,
 	ASTRO_MIDDLEWARE_SECRET_HEADER,
@@ -10,7 +9,7 @@ import {
 	ASTRO_PATH_PARAM,
 	ASTRO_PATH_TOKEN_PARAM,
 	NODE_PATH,
-} from '../index.js';
+} from '../constants.js';
 
 export interface IsrForwarding {
 	/** Route patterns backed by the ISR function. */
@@ -55,6 +54,7 @@ export async function generateEdgeMiddleware(
 	const bundledFilePath = fileURLToPath(outPath);
 	const virtualEntryId = fileURLToPath(new URL('__vercel_edge_middleware__.js', root));
 	const nodeBuiltinImports = new Set<string>();
+	const { rolldown } = await import('rolldown');
 	const bundle = await rolldown({
 		input: virtualEntryId,
 		cwd: fileURLToPath(root),
