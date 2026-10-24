@@ -40,7 +40,7 @@ function makeNext({
 	tags,
 	headers = {},
 }: {
-	body?: string;
+	body?: string | null;
 	status?: number;
 	maxAge?: number;
 	swr?: number;
@@ -128,6 +128,56 @@ describe('memory-provider onRequest', () => {
 			return new Response('fresh', { headers: h });
 		});
 		assert.equal(nextCalled, true);
+	});
+
+	it('does not cache empty 404/500 responses that the router replaces with the error page', async () => {
+		for (const status of [404, 500]) {
+			const provider = createProvider();
+			const url = `http://localhost/error-${status}`;
+
+			// First request — empty error response (body: null), should not cache
+			const req1 = makeRequest(url);
+			const res1 = await provider.onRequest!(
+				makeContext(req1),
+				makeNext({ maxAge: 60, status, body: null }),
+			);
+			assert.equal(res1.status, status);
+			assert.equal(res1.body, null);
+			assert.equal(res1.headers.has('X-Astro-Cache'), false);
+
+			// Second request — should be a miss (not cached), next() must be called
+			const req2 = makeRequest(url);
+			let nextCalled = false;
+			const res2 = await provider.onRequest!(makeContext(req2), async () => {
+				nextCalled = true;
+				const h = new Headers({ 'CDN-Cache-Control': 'max-age=60' });
+				return new Response(null, { status, headers: h });
+			});
+			assert.equal(nextCalled, true);
+			assert.equal(res2.headers.has('X-Astro-Cache'), false);
+		}
+	});
+
+	it('still caches 404/500 responses that have a non-null body', async () => {
+		const provider = createProvider();
+		const url = 'http://localhost/custom-404';
+
+		// First request — 404 with custom body, should cache
+		const req1 = makeRequest(url);
+		const res1 = await provider.onRequest!(
+			makeContext(req1),
+			makeNext({ maxAge: 60, status: 404, body: 'custom 404 body' }),
+		);
+		assert.equal(res1.headers.get('X-Astro-Cache'), 'MISS');
+
+		// Second request — should be a HIT
+		const req2 = makeRequest(url);
+		const res2 = await provider.onRequest!(
+			makeContext(req2),
+			makeNext({ maxAge: 60, status: 404, body: 'fresh' }),
+		);
+		assert.equal(res2.headers.get('X-Astro-Cache'), 'HIT');
+		assert.equal(await res2.text(), 'custom 404 body');
 	});
 });
 
@@ -545,6 +595,68 @@ describe('memory-provider SWR', () => {
 		const res3 = await provider.onRequest!(makeContext(req3), makeNext({ body: 'fresh-body' }));
 		assert.equal(res3.headers.has('X-Astro-Cache'), false);
 		assert.equal(await res3.text(), 'fresh-body');
+	});
+
+	it('removes stale entries when revalidation returns an empty 404', async (t) => {
+		t.mock.timers.enable({ apis: ['Date'] });
+		t.after(() => mock.timers.reset());
+		const provider = createProvider();
+		const url = 'http://localhost/page';
+		const req1 = makeRequest(url);
+		await provider.onRequest!(
+			makeContext(req1),
+			makeNext({ maxAge: 1, swr: 60, body: 'stale-body' }),
+		);
+
+		t.mock.timers.tick(2_000);
+		const req2 = makeRequest(url);
+		const res2 = await provider.onRequest!(
+			makeContext(req2),
+			makeNext({ maxAge: 60, status: 404, body: null }),
+		);
+		assert.equal(res2.headers.get('X-Astro-Cache'), 'STALE');
+		await Promise.resolve();
+
+		const req3 = makeRequest(url);
+		let nextCalled = false;
+		const res3 = await provider.onRequest!(makeContext(req3), async () => {
+			nextCalled = true;
+			return new Response('fresh-page');
+		});
+		assert.equal(nextCalled, true);
+		assert.equal(res3.headers.has('X-Astro-Cache'), false);
+		assert.equal(await res3.text(), 'fresh-page');
+	});
+
+	it('removes stale entries when revalidation returns an empty 404 without cache headers', async (t) => {
+		t.mock.timers.enable({ apis: ['Date'] });
+		t.after(() => mock.timers.reset());
+		const provider = createProvider();
+		const url = 'http://localhost/page-uncached-404';
+		const req1 = makeRequest(url);
+		await provider.onRequest!(
+			makeContext(req1),
+			makeNext({ maxAge: 1, swr: 60, body: 'stale-body' }),
+		);
+
+		t.mock.timers.tick(2_000);
+		const req2 = makeRequest(url);
+		const res2 = await provider.onRequest!(
+			makeContext(req2),
+			makeNext({ status: 404, body: null }),
+		);
+		assert.equal(res2.headers.get('X-Astro-Cache'), 'STALE');
+		await Promise.resolve();
+
+		const req3 = makeRequest(url);
+		let nextCalled = false;
+		const res3 = await provider.onRequest!(makeContext(req3), async () => {
+			nextCalled = true;
+			return new Response('fresh-page');
+		});
+		assert.equal(nextCalled, true);
+		assert.equal(res3.headers.has('X-Astro-Cache'), false);
+		assert.equal(await res3.text(), 'fresh-page');
 	});
 });
 

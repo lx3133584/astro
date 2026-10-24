@@ -1,4 +1,5 @@
 import picomatch from 'picomatch';
+import { REROUTABLE_STATUS_CODES } from '../constants.js';
 import type { AstroCookies } from '../cookies/cookies.js';
 import { getCookiesFromResponse } from '../cookies/response.js';
 import { AstroError } from '../errors/errors.js';
@@ -285,6 +286,15 @@ function warnSkippedVary(logger: AstroRuntimeLogger, url: URL, header: 'Cookie' 
 }
 
 /**
+ * Whether the router will replace this response with the rendered error page.
+ * Such responses are not cached: the cached copy has a non-null body, so a
+ * cache hit would skip the reroute and serve an empty body (#18456).
+ */
+function isErrorPageReroute(response: Response): boolean {
+	return response.body === null && REROUTABLE_STATUS_CODES.includes(response.status);
+}
+
+/**
  * Simple LRU cache backed by a Map (insertion-order iteration).
  * When the cache exceeds `max` entries, the oldest entry is evicted.
  */
@@ -457,6 +467,10 @@ const memoryProvider = ((config): CacheProvider => {
 						next()
 							.then(async (freshResponse) => {
 								const cdnCC = freshResponse.headers.get('CDN-Cache-Control');
+								if (isErrorPageReroute(freshResponse)) {
+									cache.delete(key);
+									return;
+								}
 								const { maxAge: newMaxAge, swr: newSwr } = parseCdnCacheControl(cdnCC);
 								if (newMaxAge > 0) {
 									if (hasSetCookieHeader(freshResponse)) {
@@ -509,6 +523,9 @@ const memoryProvider = ((config): CacheProvider => {
 			const { maxAge, swr } = parseCdnCacheControl(cdnCC);
 
 			if (maxAge > 0) {
+				if (isErrorPageReroute(response)) {
+					return response;
+				}
 				if (hasSetCookieHeader(response)) {
 					warnSkippedSetCookie(context.logger, requestUrl);
 					return response;
